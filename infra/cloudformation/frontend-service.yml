@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  CloudFront distribution backed by a private S3 bucket that serves the
+  Geospatial Data Analysis project's React SPA.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: geo
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  ## Optional: bring-your-own ACM cert + custom domain
+  DomainName:
+    Type: String
+    Default: "" # leave blank for *.cloudfront.net
+  CertificateArn:
+    Type: String
+    Default: "" # us-east-1 ACM ARN required when DomainName ≠ ""
+
+FrontendBucket:
+  Type: AWS::S3::Bucket
+  DeletionPolicy: Retain
+  Properties:
+    BucketName: !Sub "${ProjectName}-${Environment}-frontend-${AWS::AccountId}"
+    VersioningConfiguration: { Status: Enabled }
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+
+CFOriginAccessIdentity:
+  Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  Properties:
+    CloudFrontOriginAccessIdentityConfig:
+      Comment: !Sub "access-${ProjectName}-${Environment}-frontend"
+
+BucketPolicy:
+  Type: AWS::S3::BucketPolicy
+  Properties:
+    Bucket: !Ref FrontendBucket
+    PolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Sid: AllowCloudFront
+          Effect: Allow
+          Principal:
+            CanonicalUser: !GetAtt CFOriginAccessIdentity.S3CanonicalUserId
+          Action: "s3:GetObject"
+          Resource: !Sub "${FrontendBucket.Arn}/*"
+
+FrontendDistribution:
+  Type: AWS::CloudFront::Distribution
+  Properties:
+    DistributionConfig:
+      Enabled: true
+      Comment: !Sub "${ProjectName}-${Environment}-frontend"
+      DefaultRootObject: index.html
+      HttpVersion: http2
+      PriceClass: PriceClass_100
+      Origins:
+        - Id: s3-frontend
+          DomainName: !GetAtt FrontendBucket.DomainName
+          S3OriginConfig:
+            OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CFOriginAccessIdentity}"
+      DefaultCacheBehavior:
+        TargetOriginId: s3-frontend
+        ViewerProtocolPolicy: redirect-to-https
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD]
+        Compress: true
+      ViewerCertificate:
+        # If you provided a cert & domain, use it; else use default CF cert.
+        Fn::If:
+          - UseCustomCert
+          - {
+              AcmCertificateArn: !Ref CertificateArn,
+              SslSupportMethod: sni-only,
+            }
+          - { CloudFrontDefaultCertificate: true }
+      Aliases:
+        Fn::If:
+          - UseCustomCert
+          - [!Ref DomainName]
+          - []
+      CustomErrorResponses:
+        - ErrorCode: 403
+          ResponseCode: 200
+          ResponsePagePath: /index.html
+        - ErrorCode: 404
+          ResponseCode: 200
+          ResponsePagePath: /index.html
+
+Conditions:
+  UseCustomCert: !Not [!Equals [!Ref DomainName, ""]]
+
+Outputs:
+  BucketName:
+    Description: S3 bucket for static assets
+    Value: !Ref FrontendBucket
+  DistributionId:
+    Value: !Ref FrontendDistribution
+  CloudFrontURL:
+    Description: Public URL (attach your Route 53 CNAME/A-alias if using custom domain)
+    Value: !GetAtt FrontendDistribution.DomainName

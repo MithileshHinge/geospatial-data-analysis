@@ -1,0 +1,148 @@
+# ===== file: api-service.yml ================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECS Fargate Service for the FastAPI backend.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: geo
+  Environment:
+    Type: String
+    Default: prod
+  ApiImageUri:
+    Type: String
+    Description: Fully-qualified URI of the built Docker image in ECR.
+  DesiredCount:
+    Type: Number
+    Default: 2
+
+Resources:
+  # IAM roles -----------------------------------------------------------------
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: ["sts:AssumeRole"]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: ["sts:AssumeRole"]
+
+  # Task definition -----------------------------------------------------------
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-api"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: ["FARGATE"]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ApiImageUri
+          PortMappings:
+            - ContainerPort: 8000
+          Environment:
+            - Name: DB_HOST
+              Value: !ImportValue
+                Fn::Sub: "${ProjectName}-${Environment}-PostgresEndpoint"
+            - Name: REDIS_HOST
+              Value: !ImportValue
+                Fn::Sub: "${ProjectName}-${Environment}-RedisEndpoint"
+          Essential: true
+
+  # ALB Target Group & Listener rule -----------------------------------------
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-${Environment}-VpcId"
+      TargetType: ip
+      Port: 8000
+      Protocol: HTTP
+      HealthCheckPath: /health
+      Matcher: { HttpCode: "200" }
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !ImportValue
+        Fn::Sub: "${ProjectName}-${Environment}-ALBListenerArn"
+      Priority: 100
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig: { Values: ["/v1/*"] }
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  # ECS Service ---------------------------------------------------------------
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn: ApiListenerRule
+    Properties:
+      Cluster: !ImportValue
+        Fn::Sub: "${ProjectName}-${Environment}-ClusterName"
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref ApiTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            !Split [
+              ",",
+              !ImportValue Fn::Sub: "${ProjectName}-${Environment}-PublicSubnetIds",
+            ]
+          SecurityGroups:
+            [!ImportValue Fn::Sub: "${ProjectName}-${Environment}-ECSSG"]
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  # Auto Scaling configuration ------------------------------------------------
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 2
+      ResourceId: !Join
+        - "/"
+        - - service
+          - !ImportValue
+            Fn::Sub: "${ProjectName}-${Environment}-ClusterName"
+          - !GetAtt ApiService.Name
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-${Environment}-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 300
+
+Outputs:
+  ApiServiceName:
+    Value: !Ref ApiService

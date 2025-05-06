@@ -1,0 +1,51 @@
+name: Run Scraper & ETL Tasks
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 3 * * *'    # scheduled daily 03:00 UTC
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: geo
+  ENV: prod
+
+jobs:
+  run-batch:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Look up exported values
+        id: exports
+        run: |
+          get() { aws cloudformation list-exports --query "Exports[?Name=='$1'].Value" --out text; }
+          echo "cluster=$(get ${PROJECT}-${ENV}-ClusterName)" >> $GITHUB_OUTPUT
+          echo "subnets=$(get ${PROJECT}-${ENV}-PrivateSubnetIds)" >> $GITHUB_OUTPUT
+          echo "scraper=$(get ${PROJECT}-${ENV}-ScraperTaskDefArn)" >> $GITHUB_OUTPUT
+          echo "etl=$(get ${PROJECT}-${ENV}-EtlTaskDefArn)" >> $GITHUB_OUTPUT
+
+      - name: Run scraper
+        run: |
+          aws ecs run-task \
+            --cluster ${{ steps.exports.outputs.cluster }} \
+            --task-definition ${{ steps.exports.outputs.scraper }} \
+            --launch-type FARGATE \
+            --network-configuration \
+                "awsvpcConfiguration={subnets=[${{ steps.exports.outputs.subnets }}],assignPublicIp=DISABLED}"
+
+      - name: Run ETL
+        run: |
+          aws ecs run-task \
+            --cluster ${{ steps.exports.outputs.cluster }} \
+            --task-definition ${{ steps.exports.outputs.etl }} \
+            --launch-type FARGATE \
+            --network-configuration \
+                "awsvpcConfiguration={subnets=[${{ steps.exports.outputs.subnets }}],assignPublicIp=DISABLED}"

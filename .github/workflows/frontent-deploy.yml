@@ -1,0 +1,68 @@
+name: Build & Deploy Front-end (React → S3 + CloudFront)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/frontend/**" # only when the SPA changes
+  workflow_dispatch: # manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: geo
+  ENV: prod
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC to AWS
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Build the React app
+      - name: Install deps & build
+        working-directory: services/frontend
+        run: |
+          npm ci
+          npm run build              # outputs to services/frontend/dist (vite) or build/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Discover bucket & distribution IDs that the base stack exported
+      - name: Look up CloudFormation exports
+        id: exports
+        run: |
+          get() { aws cloudformation list-exports \
+                    --query "Exports[?Name=='$1'].Value" --output text; }
+          echo "bucket=$(get ${PROJECT}-${ENV}-frontend-${AWS_ACCOUNT_ID})" >> $GITHUB_OUTPUT || true
+          echo "distribution=$(get ${PROJECT}-${ENV}-FrontendDistributionId)" >> $GITHUB_OUTPUT || true
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+      # Sync build artefacts to S3 (delete removed files)
+      - name: Upload to S3
+        run: |
+          BUILD_DIR=$( [ -d services/frontend/dist ] && echo dist || echo build )
+          aws s3 sync "services/frontend/$BUILD_DIR/" \
+                      "s3://${{ steps.exports.outputs.bucket }}/" \
+                      --delete
+
+      # CloudFront cache busting
+      - name: Create invalidation
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.exports.outputs.distribution }} \
+            --paths '/*'

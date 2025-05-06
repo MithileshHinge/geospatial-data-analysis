@@ -1,0 +1,8 @@
+# python
+__pycache__/
+*.py[cod]
+.env
+# docker
+*.pyc
+data/
+dist/

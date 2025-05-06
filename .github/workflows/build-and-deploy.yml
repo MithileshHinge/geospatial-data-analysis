@@ -1,0 +1,83 @@
+name: Build & Deploy Docker Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: geo
+  ENV: prod
+  ECR_BASE: 123456789012.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    # OIDC → assume an IAM role with ECR + CloudFormation privileges
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Detect which service folders changed between the last commit and HEAD
+      - name: List changed service folders
+        id: diff
+        run: |
+          BASE_SHA="${{ github.event.before }}"
+          HEAD_SHA="${{ github.sha }}"
+          services=$(git diff --name-only $BASE_SHA $HEAD_SHA |
+                     grep '^services/' | cut -d/ -f2 | sort -u)
+          echo "changed=$services" >> $GITHUB_OUTPUT
+
+      # Build & push each changed Docker image
+      - name: Build & Push
+        if: ${{ steps.diff.outputs.changed != '' }}
+        id: buildpush
+        run: |
+          for svc in ${{ steps.diff.outputs.changed }}; do
+            IMAGE="${{ env.ECR_BASE }}/${{ env.PROJECT }}-$svc:${GITHUB_SHA::7}"
+            docker build -t "$IMAGE" -f "services/$svc/Dockerfile" .
+            docker push "$IMAGE"
+            echo "$svc=$IMAGE" >> images.txt
+          done
+          echo "matrix=$(cat images.txt | jq -R -s -c 'split("\n")[:-1] |
+                map(split("=")) | map({(.[0]): .[1]}) |
+                add')" >> $GITHUB_OUTPUT
+
+      # Update CloudFormation stacks so ECS pulls the new image(s).
+      - name: Update CloudFormation
+        if: ${{ steps.diff.outputs.changed != '' }}
+        run: |
+          declare -A STACK_PARAM=(
+            [api]="geo-prod-api ApiImageUri"
+            [scraper]="geo-prod-scraper ScraperImageUri"
+            [etl]="geo-prod-etl EtlImageUri"
+          )
+          while read line; do
+            svc=${line%%=*}
+            img=${line##*=}
+            if [[ -n "${STACK_PARAM[$svc]}" ]]; then
+              read stack param <<< "${STACK_PARAM[$svc]}"
+              aws cloudformation deploy \
+                --stack-name "$stack" \
+                --template-file "infra/${svc}-service.yml" \
+                --parameter-overrides \
+                    ProjectName=${{ env.PROJECT }} \
+                    Environment=${{ env.ENV }} \
+                    $param=$img \
+                --capabilities CAPABILITY_NAMED_IAM
+            fi
+          done < images.txt

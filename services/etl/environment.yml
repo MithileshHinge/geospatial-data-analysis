@@ -1,0 +1,11 @@
+name: etl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - geopandas
+  - pandas
+  - boto3
+  - sqlalchemy>=2
+  - geoalchemy2
+  - psycopg2

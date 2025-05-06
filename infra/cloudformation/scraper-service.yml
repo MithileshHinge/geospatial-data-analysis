@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: One-off ECS RunTask definition for the scraper batch job.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: geo
+  Environment:
+    Type: String
+    Default: prod
+  ScraperImageUri:
+    Type: String
+
+Resources:
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: ["sts:AssumeRole"]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: ["sts:AssumeRole"]
+      Policies:
+        - PolicyName: s3-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["s3:PutObject"]
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-raw-${AWS::AccountId}/*"
+  ScraperTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-scraper"
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: ["FARGATE"]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: scraper
+          Image: !Ref ScraperImageUri
+          Command: ["python", "-m", "services.scraper"]
+          Environment:
+            - Name: S3_BUCKET
+              Value: !ImportValue Fn::Sub: "${ProjectName}-${Environment}-S3RawBucket"
+          Essential: true
+
+Outputs:
+  ScraperTaskDefArn:
+    Value: !Ref ScraperTaskDefinition
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-ScraperTaskDefArn"
