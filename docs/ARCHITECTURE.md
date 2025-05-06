@@ -2,7 +2,7 @@
 
 This document details the AWS infrastructure powering our geospatial data analysis platform.
 
-![AWS Infrastructure Architecture](arch_diag.png)
+![AWS Infrastructure Architecture](./arch_diag.png)
 
 ## Request Flow
 

@@ -2,6 +2,17 @@
 
 A monorepo containing services for scraping, processing, and visualizing US Census geographic and demographic data.
 
+## TLDR - Quick Setup
+
+```bash
+# Launch API and frontend services with dependencies
+docker compose -f infra/docker-compose.yml up
+
+# Trigger data pipeline jobs
+docker compose -f infra/docker-compose.yml run --rm --build scraper
+docker compose -f infra/docker-compose.yml run --rm --build etl
+```
+
 ## Repository Structure
 
 ```
