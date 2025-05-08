@@ -13,11 +13,12 @@ COPY --from=builder /opt/conda /opt/conda
 ENV PATH=/opt/conda/bin:$PATH \
     PYTHONUNBUFFERED=1
 
-WORKDIR /app
-
 COPY lib/ /tmp/lib/
 RUN /opt/conda/bin/pip install --no-cache-dir -e "/tmp/lib[db,s3]"
 
 COPY services/etl/app/ /app/
 
-ENTRYPOINT ["/opt/conda/bin/python", "main.py"]
+COPY services/etl/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
