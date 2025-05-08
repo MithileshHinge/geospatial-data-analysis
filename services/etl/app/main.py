@@ -51,13 +51,12 @@ def main() -> None:
     # Download TIGER zips and feed to loader
     tiger_paths = TigerS3Paths.from_base_s3_path(s3_client, settings.s3_prefix)
 
-    international_rows, state_rows, county_rows, msa_rows, place_rows = (
-        extract_tiger_files(s3_client, tiger_paths, geo_sets, name_map)
+    state_rows, county_rows, msa_rows, place_rows = extract_tiger_files(
+        s3_client, tiger_paths, geo_sets, name_map
     )
 
     logger.info(
-        "TIGER files extracted: %d international, %d states, %d counties, %d places, %d MSAs",
-        len(international_rows),
+        "TIGER files extracted: %d states, %d counties, %d places, %d MSAs",
         len(state_rows),
         len(county_rows),
         len(place_rows),
@@ -67,8 +66,6 @@ def main() -> None:
 
     with SessionLocal() as db:
         wq = WriteQueries(db)
-        wq.upsert_international(international_rows)
-        logger.info("International written to database")
         wq.upsert_states(state_rows)
         logger.info("States written to database")
         wq.upsert_counties(county_rows)

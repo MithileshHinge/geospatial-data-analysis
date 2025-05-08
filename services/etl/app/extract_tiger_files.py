@@ -23,17 +23,6 @@ def _extract_shapefile_zip(zip_path: Path) -> Path:
         return zip_path.parent / shp_files[0]
 
 
-def load_international_shapefile(shp_path: Path) -> Iterable[models.International]:
-    gdf = gpd.read_file(shp_path)
-    for rec in gdf.itertuples(index=False):
-        row = rec._asdict()
-        yield models.International(
-            geoid=row["GEOID"],
-            name=row["NAME"],
-            geom=row["geometry"],
-        )
-
-
 def load_state_shapefile(
     shp_path: Path, wanted_geoids: set[str], name_map: Dict[str, str]
 ) -> Iterable[models.State]:
@@ -125,14 +114,6 @@ def extract_tiger_files(
     geo_sets: Dict[str, set[str]],
     name_map: Dict[str, str],
 ):
-    # Process international boundary
-    international_zip = download_to_tempfile(
-        s3_client, settings.s3_bucket, tiger_s3_paths.international
-    )
-    international_shp = _extract_shapefile_zip(international_zip)
-    international_rows = list(load_international_shapefile(international_shp))
-    clean_up_temp_files(international_zip, international_shp)
-
     # Process states
     state_zip = download_to_tempfile(
         s3_client, settings.s3_bucket, tiger_s3_paths.state
@@ -167,4 +148,4 @@ def extract_tiger_files(
         )
         clean_up_temp_files(place_zip, place_shp)
 
-    return international_rows, state_rows, county_rows, msa_rows, place_rows
+    return state_rows, county_rows, msa_rows, place_rows
